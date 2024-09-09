@@ -4,7 +4,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import csv
 import time
-from urllib.parse import urljoin  # 新增，用于拼接URL
+from urllib.parse import urljoin
+from datetime import datetime  # 新增
 
 # 全局变量，方便修改
 BASE_URL = 'http://example.com/forum'  # 论坛的基础 URL
@@ -17,6 +18,7 @@ TEXT_LINK = 'download'  # 链接文本中包含的关键字
 TEXT_BUTTON = 'school'  # 最终按钮文本中包含的关键字
 
 LOG_FILE = 'scraping_log.txt'  # 日志文件
+CSV_FILE = 'forum_posts.csv'  # CSV文件路径
 
 
 # 定义记录日志的函数
@@ -123,6 +125,20 @@ def parse_forum_page(url, post_attributes):
     return []
 
 
+# 读取现有的CSV文件中的历史记录
+def load_existing_posts(filename):
+    existing_posts = set()
+    try:
+        with open(filename, mode='r', newline='', encoding='utf-8') as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                # 用 (title, final_button_link) 作为唯一标识
+                existing_posts.add((row['title'], row['final_button_link']))
+    except FileNotFoundError:
+        log_message(f"{filename} 文件未找到，开始创建新文件。")
+    return existing_posts
+
+
 # 主函数，抓取第1到第10页的数据
 def scrape_forum():
     all_posts = []
@@ -140,18 +156,36 @@ def scrape_forum():
     return all_posts
 
 
-# 将数据保存到CSV文件
-def save_to_csv(posts, filename='forum_posts.csv'):
-    # 只保存 'title' 和 'final_button_link'
-    fieldnames = ['title', 'final_button_link']
+# 获取当前时间戳的函数
+def get_current_timestamp():
+    """返回格式化的当前系统时间"""
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+
+# 将数据保存到CSV文件，排除重复项
+def save_to_csv(posts, filename=CSV_FILE):
+    # 只保存 'title', 'final_button_link' 和 'timestamp'
+    fieldnames = ['title', 'final_button_link', 'timestamp']
+
+    # 读取已有的帖子记录
+    existing_posts = load_existing_posts(filename)
+
+    # 打开文件准备写入新记录
     try:
-        # 打开文件并写入数据
-        with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        with open(filename, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.DictWriter(file, fieldnames=fieldnames)
-            writer.writeheader()  # 写入标题行
-            writer.writerows(posts)  # 写入数据行
-        log_message(f"数据已保存到 {filename}")
+
+            # 只写入新的记录
+            for post in posts:
+                if (post['title'], post['final_button_link']) not in existing_posts:
+                    writer.writerow({
+                        'title': post['title'],
+                        'final_button_link': post['final_button_link'],
+                        'timestamp': get_current_timestamp()  # 添加当前系统时间
+                    })
+                    log_message(f"保存新的帖子: 标题: {post['title']}, 最终按钮链接: {post['final_button_link']}")
+                else:
+                    log_message(f"跳过重复的帖子: 标题: {post['title']}, 最终按钮链接: {post['final_button_link']}")
     except Exception as e:
         log_message(f"保存到CSV文件时出错: {e}")
 
@@ -164,5 +198,5 @@ if __name__ == '__main__':
     for post in result:
         log_message(f"标题: {post['title']}, 最终按钮链接: {post['final_button_link']}")
 
-    # 保存结果到CSV文件
-    save_to_csv(result, 'forum_posts.csv')
+    # 保存结果到CSV文件，排除重复项
+    save_to_csv(result, CSV_FILE)
