@@ -1,3 +1,4 @@
+import threading
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -6,6 +7,7 @@ import csv
 import time
 from urllib.parse import urljoin
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 全局变量，方便修改
 BASE_URL = 'http://example.com/forum'  # 论坛的基础 URL
@@ -19,14 +21,20 @@ TEXT_BUTTON = 'school'  # 最终按钮文本中包含的关键字
 
 LOG_FILE = 'scraping_log.txt'  # 日志文件
 CSV_FILE = 'forum_posts.csv'  # CSV文件路径
-NUM_PAGES = 10  # 要抓取的页面数
 
+START_PAGE = 1  # 抓取的起始页
+END_PAGE = 10  # 抓取的结束页
+MAX_WORKERS = 5  # 并发线程数
+
+# 定义锁对象
+log_lock = threading.Lock()
 
 # 定义记录日志的函数
 def log_message(message):
     """将信息写入日志文件"""
-    with open(LOG_FILE, 'a', encoding='utf-8') as f:
-        f.write(f"{message}\n")
+    with log_lock:  # 确保只有一个线程能写入日志
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(f"{message}\n")
 
 
 # 定义超时重试策略
@@ -64,7 +72,7 @@ def find_link_and_follow(soup, attributes_map, search_text, next_step_callback):
         link = soup.find('a', attrs=attributes_map, string=lambda text: search_text in text if text else False)
         if link:
             new_url = link['href']
-            log_message(f"找到的链接: {new_url}")
+            # log_message(f"找到的链接: {new_url}")
 
             # 执行下一步操作，通常是访问新的链接并查找更多内容
             return next_step_callback(new_url)
@@ -98,33 +106,46 @@ def get_download_link_from_post(post_url):
     return None
 
 
-# 解析页面并提取标题和链接，并继续获取下载链接和按钮链接
+# 处理单个帖子的抓取逻辑
+def process_post(link):
+    title = link.get_text().strip()
+    if TEXT_POST_TITLE in title:
+        href = link['href']
+        # 将帖子的 href 与 BASE_URL 拼接为完整链接
+        full_url = urljoin(BASE_URL, href)
+        log_message(f"抓取的帖子: 标题: {title}, 链接: {full_url}")
+
+        # 访问每个帖子链接，获取包含 TEXT_LINK 的链接
+        final_button_link = get_download_link_from_post(full_url)
+
+        # 只返回 final_button_link 不为 None 的记录
+        if final_button_link:
+            post = {
+                'title': title,
+                'final_button_link': final_button_link
+            }
+            return post
+    return None
+
+
+# 解析页面并提取标题和链接，并继续获取下载链接和按钮链接，使用并发处理
 def parse_forum_page(url, post_attributes):
     soup = fetch_soup_from_url(url)
     if soup:
         posts = []
         # 使用通用函数查找所有符合 post_attributes 的链接
         links = find_all_links(soup, post_attributes)
-        for link in links:
-            title = link.get_text().strip()
-            if TEXT_POST_TITLE in title:
-                href = link['href']
-                # 将帖子的 href 与 BASE_URL 拼接为完整链接
-                full_url = urljoin(BASE_URL, href)
-                log_message(f"抓取的帖子: 标题: {title}, 链接: {full_url}")
 
-                # 访问每个帖子链接，获取包含 TEXT_LINK 的链接
-                final_button_link = get_download_link_from_post(full_url)
-
-                # 只保存 final_button_link 不为 None 的记录
-                if final_button_link:
-                    post = {
-                        'title': title,
-                        'final_button_link': final_button_link
-                    }
-                    # 立即保存到CSV文件
-                    save_to_csv([post], CSV_FILE)  # 将找到的帖子即时保存
+        # 使用线程池并发执行每个帖子的抓取逻辑
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(process_post, link) for link in links]
+            for future in as_completed(futures):
+                post = future.result()
+                if post:
                     posts.append(post)
+
+        # 保存找到的所有帖子
+        save_to_csv(posts, CSV_FILE)
         return posts
     return []
 
@@ -182,9 +203,9 @@ def save_to_csv(posts, filename=CSV_FILE):
         log_message(f"保存到CSV文件时出错: {e}")
 
 
-# 主函数，抓取指定数量的页面数据
+# 主函数，抓取指定页面范围的数据
 def scrape_forum():
-    for page in range(1, NUM_PAGES + 1):
+    for page in range(START_PAGE, END_PAGE + 1):
         url = f"{BASE_URL}?page={page}"
         log_message(f"正在抓取: {url}")
 
