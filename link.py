@@ -8,6 +8,10 @@ import time
 from urllib.parse import urljoin
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import urllib3
+
+# 禁用SSL警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 全局变量，方便修改
 BASE_URL = 'http://example.com/forum'  # 论坛的基础 URL
@@ -53,10 +57,11 @@ def requests_retry_session(retries=5, backoff_factor=0.3, status_forcelist=(500,
     return session
 
 
-# 通用的函数，用于根据URL获取BeautifulSoup对象
+# 通用的函数，用于根据URL获取BeautifulSoup对象，忽略证书错误
 def fetch_soup_from_url(url):
     try:
-        response = requests_retry_session().get(url, timeout=5)
+        # verify=False 忽略 SSL 证书错误
+        response = requests_retry_session().get(url, timeout=5, verify=False)
         response.raise_for_status()  # 检查是否成功返回
         soup = BeautifulSoup(response.content, 'html.parser')
         return soup
@@ -73,8 +78,6 @@ def find_link_and_follow(soup, attributes_map, search_text, next_step_callback):
         if link:
             new_url = link['href']
             # log_message(f"找到的链接: {new_url}")
-
-            # 执行下一步操作，通常是访问新的链接并查找更多内容
             return next_step_callback(new_url)
         else:
             log_message(f"未找到包含 '{search_text}' 的链接")
@@ -92,7 +95,6 @@ def find_all_links(soup, attributes_map):
 def get_final_button_link(new_url):
     soup = fetch_soup_from_url(new_url)
     if soup:
-        # 查找符合 ATTR_BUTTON 的 <a> 标签，文本包含 TEXT_BUTTON
         return find_link_and_follow(soup, ATTR_BUTTON, TEXT_BUTTON, lambda x: x)  # 返回找到的链接文本
     return None
 
@@ -101,7 +103,6 @@ def get_final_button_link(new_url):
 def get_download_link_from_post(post_url):
     soup = fetch_soup_from_url(post_url)
     if soup:
-        # 查找符合 ATTR_LINK 的 <a> 标签，文本包含 TEXT_LINK
         return find_link_and_follow(soup, ATTR_LINK, TEXT_LINK, get_final_button_link)
     return None
 
