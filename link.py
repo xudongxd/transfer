@@ -30,6 +30,8 @@ START_PAGE = 1  # 抓取的起始页
 END_PAGE = 10  # 抓取的结束页
 MAX_WORKERS = 5  # 并发线程数
 
+FORCE_FETCH_SUCCESS = True  # 是否强制抓取页面成功，如果为 True，则无限重试，直到成功
+
 # 定义锁对象
 log_lock = threading.Lock()
 
@@ -57,17 +59,25 @@ def requests_retry_session(retries=5, backoff_factor=0.3, status_forcelist=(500,
     return session
 
 
-# 通用的函数，用于根据URL获取BeautifulSoup对象，忽略证书错误
+# 修改后的fetch_soup_from_url函数，增加全局开关控制是否强制重试
 def fetch_soup_from_url(url):
-    try:
-        # verify=False 忽略 SSL 证书错误
-        response = requests_retry_session().get(url, timeout=5, verify=False)
-        response.raise_for_status()  # 检查是否成功返回
-        soup = BeautifulSoup(response.content, 'html.parser')
-        return soup
-    except Exception as e:
-        log_message(f"访问 {url} 失败: {e}")
-        return None
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            # verify=False 忽略 SSL 证书错误
+            response = requests_retry_session().get(url, timeout=5, verify=False)
+            response.raise_for_status()  # 检查是否成功返回
+            soup = BeautifulSoup(response.content, 'html.parser')
+            log_message(f"成功访问 {url}，尝试次数: {attempt}")
+            return soup
+        except Exception as e:
+            log_message(f"访问 {url} 失败: {e}，尝试次数: {attempt}")
+            # 如果不强制重试，则在遇到错误时直接返回 None
+            if not FORCE_FETCH_SUCCESS:
+                return None
+            # 如果强制重试，则等待一段时间后继续尝试
+            time.sleep(2)
 
 
 # 通用函数，用于查找特定属性的链接并执行进一步处理
@@ -129,9 +139,19 @@ def process_post(link):
     return None
 
 
-# 解析页面并提取标题和链接，并继续获取下载链接和按钮链接，使用并发处理
+# 修改后的parse_forum_page函数，增加强制重试机制
 def parse_forum_page(url, post_attributes):
-    soup = fetch_soup_from_url(url)
+    """强制页面必须成功访问"""
+    # 强制重试的机制
+    soup = None
+    while not soup:
+        soup = fetch_soup_from_url(url)
+        if not soup:
+            log_message(f"访问 {url} 失败，重试中...")
+            time.sleep(2)  # 等待 5 秒后重试
+    
+    log_message(f"成功访问 {url}")
+
     if soup:
         posts = []
         # 使用通用函数查找所有符合 post_attributes 的链接
@@ -212,10 +232,6 @@ def scrape_forum():
 
         parse_forum_page(url, ATTR_POST_TITLE)
 
-        # 为了避免请求过快，加入延时
-        time.sleep(2)
 
-
-# 示例运行
 if __name__ == '__main__':
     scrape_forum()
